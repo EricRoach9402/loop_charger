@@ -149,7 +149,7 @@ static void on_write_cmd(const char *topic, const char *value)
         return;
     }
 
-    if (ups_cmd_push(uid, addr, &val, 1) != 0) {
+    if (ups_cmd_push(uid, addr, &val, 1, UPS_WRITE_MODE_AUTO) != 0) {
         LOG_ERROR("[CMOS Bridge] write: command queue full for uid=%u "
                   "addr=0x%04X", uid, addr);
     }

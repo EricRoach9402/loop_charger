@@ -39,6 +39,19 @@ int stop_ups_modules(void);
 /* ── CMOS bridge command interface ────────────────────────────────────── */
 
 /**
+ * @brief Modbus write function-code selection for ups_cmd_push().
+ *
+ *  UPS_WRITE_MODE_AUTO – count == 1 → FC06, count > 1 → FC16
+ *  UPS_WRITE_MODE_FC06 – force FC06 (count must be 1)
+ *  UPS_WRITE_MODE_FC16 – force FC16 (count >= 1)
+ */
+typedef enum {
+    UPS_WRITE_MODE_AUTO,
+    UPS_WRITE_MODE_FC06,
+    UPS_WRITE_MODE_FC16,
+} ups_write_mode_t;
+
+/**
  * @brief Enqueue a Modbus register-write command for a UPS unit.
  *
  * Called from the CMOS bridge thread.  Thread-safe (uses a per-unit mutex).
@@ -47,10 +60,12 @@ int stop_ups_modules(void);
  * @param uid     modbus_uid of the target UPS unit.
  * @param addr    Device register address (device_address in the mapping table).
  * @param values  Register values in host byte order.
- * @param count   Number of registers (1 → FC06, >1 → FC16).
+ * @param count   Number of registers to write.
+ * @param mode    FC selection: AUTO, FC06, or FC16.
  * @return 0 on success, -1 if the unit is not found or the queue is full.
  */
 int ups_cmd_push(uint8_t uid, uint16_t addr,
-                 const uint16_t *values, uint16_t count);
+                 const uint16_t *values, uint16_t count,
+                 ups_write_mode_t mode);
 
 #endif /* UPS_MODULE_H */

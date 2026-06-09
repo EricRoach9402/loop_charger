@@ -58,10 +58,12 @@
 #define UPS_CMD_QUEUE_CAPACITY         16u
 
 /* ── Write command entry ──────────────────────────────────────────────── */
+
 typedef struct {
     uint16_t addr;
     uint16_t values[MODBUS_MAX_WRITE_REGISTERS];
     uint16_t count;
+    ups_write_mode_t mode;
 } ups_write_cmd_t;
 
 /* ── Per-unit command queue ───────────────────────────────────────────── */
@@ -106,7 +108,8 @@ static void queue_destroy(ups_cmd_queue_t *q)
  * @return 0 on success, -1 if the queue is full or count is out of range.
  */
 static int queue_push(ups_cmd_queue_t *q, uint16_t addr,
-                      const uint16_t *values, uint16_t count)
+                      const uint16_t *values, uint16_t count,
+                      ups_write_mode_t mode)
 {
     if (count == 0 || count > MODBUS_MAX_WRITE_REGISTERS) {
         return -1;
@@ -122,6 +125,7 @@ static int queue_push(ups_cmd_queue_t *q, uint16_t addr,
     ups_write_cmd_t *entry = &q->entries[q->tail];
     entry->addr  = addr;
     entry->count = count;
+    entry->mode = mode;
     memcpy(entry->values, values, count * sizeof(uint16_t));
 
     q->tail  = (q->tail + 1u) % UPS_CMD_QUEUE_CAPACITY;
@@ -198,16 +202,35 @@ static void interruptible_sleep_ms(const ups_unit_t *unit, uint32_t duration_ms)
 static int write_registers_to_device(ups_unit_t *unit,
                                      uint16_t    addr,
                                      const uint16_t *values,
-                                     uint16_t    count)
+                                     uint16_t    count,
+                                     ups_write_mode_t mode)
 {
     int result;
 
-    if (count == 1) {
+    switch (mode) {
+    case UPS_WRITE_MODE_FC06:
+        if (count != 1) {
+            LOG_ERROR("[UPS TCP] %s: FC06 requires count=1 (got %u) at 0x%04X.",
+                      unit->cfg->name, count, addr);
+            return -1;
+        }
         result = mb_tcp_client_write_single_register(
                      &unit->tcp_ctx, addr, values[0]);
-    } else {
+        break;
+    case UPS_WRITE_MODE_FC16:
         result = mb_tcp_client_write_multiple_registers(
                      &unit->tcp_ctx, addr, count, values);
+        break;
+    case UPS_WRITE_MODE_AUTO:
+    default:
+        if (count == 1) {
+            result = mb_tcp_client_write_single_register(
+                         &unit->tcp_ctx, addr, values[0]);
+        } else {
+            result = mb_tcp_client_write_multiple_registers(
+                         &unit->tcp_ctx, addr, count, values);
+        }
+        break;
     }
 
     if (result != MB_TCP_CLIENT_OK) {
@@ -296,7 +319,7 @@ int ups_tcp_process_callback(module_config_t *cfg)
     /* ── Phase 1: drain the write command queue ─────────────────────── */
     ups_write_cmd_t cmd;
     while (queue_pop(&unit->cmd_queue, &cmd) == 0) {
-        if (write_registers_to_device(unit, cmd.addr, cmd.values, cmd.count) != 0) {
+        if (write_registers_to_device(unit, cmd.addr, cmd.values, cmd.count, cmd.mode) != 0) {
             LOG_WARNING("[UPS TCP] %s: queued write to 0x%04X failed, "
                         "continuing scan.", cfg->name, cmd.addr);
         }
@@ -391,9 +414,12 @@ int ups_tcp_error_callback(module_config_t *cfg, int connection_state)
 /**
  * @brief msg_callback – execute a Modbus write on a UPS unit.
  *
- * Uses FC06 for single-register writes and FC16 for multi-register payloads.
- * Called directly (e.g., for synchronous writes) or via queue drain inside
- * process_callback.
+ * Intended as a synchronous write path via the module_callbacks_t framework.
+ * In this module, all writes are routed through ups_cmd_push() → queue drain
+ * inside process_callback; msg_callback is registered but never invoked.
+ *
+ * Retained for framework completeness.  If a direct synchronous write path
+ * is needed in the future, call this via unit->callbacks.msg_callback().
  *
  * @param cfg    Module configuration of the target UPS.
  * @param addr   Device register address to write.
@@ -414,7 +440,7 @@ int ups_msg_callback(module_config_t *cfg,
         return -1;
     }
 
-    return write_registers_to_device(unit, addr, values, (uint16_t)count);
+    return write_registers_to_device(unit, addr, values, (uint16_t)count, UPS_WRITE_MODE_AUTO);
 }
 
 /* ── Thread function ──────────────────────────────────────────────────── */
@@ -564,7 +590,8 @@ int stop_ups_modules(void)
  * @return 0 on success, -1 if unit not found or queue is full.
  */
 int ups_cmd_push(uint8_t uid, uint16_t addr,
-                 const uint16_t *values, uint16_t count)
+                 const uint16_t *values, uint16_t count,
+                 ups_write_mode_t mode)
 {
     if (!values || count == 0 || count > MODBUS_MAX_WRITE_REGISTERS) {
         return -1;
@@ -576,5 +603,5 @@ int ups_cmd_push(uint8_t uid, uint16_t addr,
         return -1;
     }
 
-    return queue_push(&unit->cmd_queue, addr, values, count);
+    return queue_push(&unit->cmd_queue, addr, values, count, mode);
 }
