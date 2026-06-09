@@ -1,0 +1,35 @@
+{
+    "UPS": [
+        {
+            "name": "UPS#1",
+            "enabled": true,
+            "modbus_format": "TCP",
+            "modbus_role": "Slave",
+            "modbus_uid": 1,
+            "path": "/dev/ttyS3",
+            "baud_rate": 9600,
+            "gpio": "PC30"
+            
+        },
+        {
+            "name": "UPS#2",
+            "enabled": true,
+            "modbus_format": "TCP",
+            "modbus_role": "Slave",
+            "modbus_uid": 2,
+            "path": "/dev/ttyS3",
+            "baud_rate": 9600,
+            "gpio": "PC30"
+        },
+        {
+            "name": "UPS#3",
+            "enabled": true,
+            "modbus_format": "TCP",
+            "modbus_role": "Slave",
+            "modbus_uid": 3,
+            "path": "/dev/ttyS3",
+            "baud_rate": 9600,
+            "gpio": "PC30"
+        }
+    ]
+}
