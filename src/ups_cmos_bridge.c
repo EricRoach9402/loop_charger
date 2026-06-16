@@ -37,7 +37,7 @@
 #define BRIDGE_PUB_PORT         12000       /* listen port for read responses  */
 #define BRIDGE_NODE_NAME        "UPS_NODE"  /* node name for master registration */
 #define BRIDGE_SUB_TOPIC        "UPS_SUB"   /* topic for write/read requests   */
-#define BRIDGE_PUB_TOPIC        "UPS_PUB"   /* topic for read responses        */
+#define BRIDGE_PUB_TOPIC        "UPS"       /* topic for read responses        */
 #define BRIDGE_PUB_POLL_US      10000u      /* 10 ms poll interval             */
 
 /* ── Module-level state ───────────────────────────────────────────────── */
@@ -222,7 +222,7 @@ static void on_read_cmd(const char *topic, const char *value)
      * value = decimal register value.
      * Subscribers can filter by type=modbus_resp and key=<addr>.
      */
-    cmos_publish(NULL, "modbus_resp", addr_str, result_str);
+    //cmos_publish(NULL, "modbus_resp", addr_str, result_str);
 
     LOG_DEBUG("[CMOS Bridge] read uid=%u addr=0x%04X pool[0x%04X]=%u",
               uid, addr, entry->pool_address, pool_val);
@@ -277,6 +277,39 @@ static void *cmos_sub_thread(void *arg)
 }
 
 /**
+ * @brief Read one pool register and publish its value to BRIDGE_PUB_TOPIC.
+ *
+ * Converts the cached uint16_t pool value to a decimal string and forwards
+ * it to cmos_publish().  Intended for periodic push from cmos_pub_poll_thread.
+ *
+ * @param type  CMOS message type field.
+ * @param key   CMOS message key field (e.g. register address string).
+ * @param pool_address  Absolute index into internal_pool[].
+ */
+static void publish_pool_register(const module_config_t *cfg,
+                                  const char *type,
+                                  const char *key,
+                                  uint16_t    pool_address)
+{
+    uint16_t val = 0;
+
+    const char *state = (cfg->connection_state == CONNECTION_CONNECTED)
+                        ? "Alive"
+                        : "Disconnect";
+
+    if (!pool_read_register(pool_address, &val)) {
+        LOG_WARNING("[CMOS Bridge] publish_pool_register: "
+                    "pool_address 0x%04X out of range.", pool_address);
+        return;
+    }
+
+    char val_str[8];
+    snprintf(val_str, sizeof(val_str), "%u", val);
+
+    cmos_publish(state, type, key, val_str);
+}
+
+/**
  * @brief Publisher poll thread.
  *
  * cmos_pub_poll() is non-blocking (epoll_wait timeout=0) so calling it at
@@ -285,13 +318,18 @@ static void *cmos_sub_thread(void *arg)
  */
 static void *cmos_pub_poll_thread(void *arg)
 {
-    (void)arg;
+    module_config_t *ups = (module_config_t *)arg;
 
     LOG_INFO("[CMOS Bridge] publisher poll thread started, "
              "resp topic='%s'.", BRIDGE_PUB_TOPIC);
 
     while (g_bridge_running) {
         cmos_pub_poll();
+
+        for (int i = 0; i < global_config.ups_count; i++) {
+            publish_pool_register( &ups[i], "battery_voltage", NULL , 0x0000);
+        }
+
         usleep(BRIDGE_PUB_POLL_US);
     }
 
@@ -314,7 +352,7 @@ int ups_cmos_bridge_start(void)
     g_bridge_running = 1;
 
     if (pthread_create(&g_pub_poll_thread, NULL,
-                       cmos_pub_poll_thread, NULL) != 0) {
+                       cmos_pub_poll_thread, global_config.ups) != 0) {
         LOG_ERROR("[CMOS Bridge] failed to start publisher poll thread.");
         g_bridge_running = 0;
         cmos_pub_close();

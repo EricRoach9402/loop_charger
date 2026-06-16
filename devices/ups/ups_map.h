@@ -32,12 +32,6 @@
 /** UPS#1 – modbus_uid 1, pool region 0x0000–0x0034. */
 extern const device_map_profile_t ups1_profile;
 
-/** UPS#2 – modbus_uid 2, pool region 0x0035–0x0069. */
-extern const device_map_profile_t ups2_profile;
-
-/** UPS#3 – modbus_uid 3, pool region 0x006A–0x009E. */
-extern const device_map_profile_t ups3_profile;
-
 /* ── UID → profile registry ───────────────────────────────────────────── */
 
 /**

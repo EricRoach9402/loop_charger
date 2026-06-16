@@ -12,7 +12,7 @@
 
 #include "modbus_defines.h"
 
-#define LOOP_CHARGER_VERSION "0.1.0"
+#define LOOP_CHARGER_VERSION "0.0.1"
 #define MAX_UPS_COUNT        10
 
 /** Receive buffer size for module I/O. */
