@@ -39,18 +39,27 @@ DEBUG := $(strip $(DEBUG))
 TARGET = loop_charger
 
 # ── Source files ──────────────────────────────────────────────────────────
+# Project-specific sources
 SRCS = \
 	src/main.c \
 	src/config_loader.c \
-	src/log.c \
-	src/modbus_tcp.c \
-	src/modbus_tcp_client.c \
-	src/device_register_map.c \
 	src/ups_module.c \
 	src/ups_cmos_bridge.c \
-	devices/ups/ups_map.c \
-	src/cmos_pub.c \
-	src/cmos_sub.c
+	src/ups_alarm.c \
+	src/ups_alarm_manager.c \
+	devices/ups/ups_map.c
+
+# Generic library sources (portable across projects)
+SRCS += \
+	lib/alarm/alarm_engine.c \
+	lib/alarm/alarm_bridge.c \
+	lib/cmos/cmos_pub.c \
+	lib/cmos/cmos_sub.c \
+	lib/modbus/modbus_tcp.c \
+	lib/modbus/modbus_tcp_client.c \
+	lib/device_map/device_register_map.c \
+	lib/log/log.c \
+	lib/sqlite3/sqlite3.c
 
 OBJS = $(SRCS:.c=.o)
 
@@ -61,9 +70,10 @@ ARM_LIBJSONC_A  = lib/arm64/libjson-c.a
 # ── Common flags ──────────────────────────────────────────────────────────
 CFLAGS_COMMON  = -Wall -Wextra -std=c11 -D_GNU_SOURCE
 CFLAGS_COMMON += -Iinclude -Idevices
+CFLAGS_COMMON += -Ilib/alarm -Ilib/cmos -Ilib/modbus -Ilib/device_map -Ilib/log -Ilib/sqlite3
 
 # x86: link against system libjson-c dynamically
-LDLIBS_X86 = -lpthread -ljson-c
+LDLIBS_X86 = -lpthread -ljson-c -ldl
 
 ifeq ($(DEBUG), DEBUG)
     CFLAGS_COMMON += -g -O0 -DDEBUG_MODE
@@ -84,7 +94,7 @@ else ifeq ($(ARCH), arm)
     CFLAGS     = $(CFLAGS_COMMON)
     LDFLAGS    =
     # Link libjson-c statically from the bundled prebuilt; system may not have arm64 package.
-    LDLIBS     = -lpthread $(ARM_LIBJSONC_A)
+    LDLIBS     = -lpthread -ldl $(ARM_LIBJSONC_A)
     OUTPUT_DIR = arm
 
 else

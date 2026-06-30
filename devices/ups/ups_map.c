@@ -10,11 +10,6 @@
  *  access          – ACCESS_RO / ACCESS_RW / ACCESS_WO for external requests.
  *  bit_mask        – Applied after read; 0xFFFF = pass-through.
  *
- * Pool regions
- * ────────────
- *  UPS#1  (modbus_uid = 1):  0x0000 – 0x0034  (53 registers)
- *  UPS#2  (modbus_uid = 2):  0x0035 – 0x0069  (53 registers)
- *  UPS#3  (modbus_uid = 3):  0x006A – 0x009E  (53 registers)
  *
  * Rules
  * ─────

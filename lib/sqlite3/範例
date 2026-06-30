@@ -1,0 +1,24 @@
+
+id	timestamp	event	detail
+1	2026-05-19 10:00:01	START	CM_Mini_ROS master on 127.0.0.1:10000
+2	2026-05-19 10:00:03	CONNECT	client_0 connected
+3	2026-05-19 10:00:03	NODE	sensor_node
+4	2026-05-19 10:00:03	PUB_REG	sensor_node -> temperature (127.0.0.1:6001)
+5	2026-05-19 10:00:05	CONNECT	client_1 connected
+6	2026-05-19 10:00:05	NODE	display_node
+7	2026-05-19 10:00:05	SUB_REG	display_node -> temperature
+8	2026-05-19 10:00:05	CLI	node list
+9	2026-05-19 10:00:10	DISCONNECT	sensor_node
+10	2026-05-19 10:00:10	TOPIC_DEL	temperature
+對應的 event 種類：
+
+event	觸發時機
+START	master 啟動
+CONNECT	新 client TCP 連線
+NODE	client 報到 (NODE 命令)
+PUB_REG	publisher 註冊 topic
+SUB_REG	subscriber 訂閱 topic
+CLI	收到 LIST_NODE / LIST_TOPIC / TOPIC_INFO / GRAPH
+DISCONNECT	client 斷線
+TOPIC_DEL	topic 無人使用被刪除
+WARN	無空位拒絕新連線

@@ -28,6 +28,9 @@
 #include "config_loader.h"
 #include "device_register_map.h"
 #include "ups_module.h"
+#include "ups_alarm.h"
+#include "ups_alarm_manager.h"
+#include "alarm_bridge.h"
 #include "log.h"
 
 /* ── Globals ──────────────────────────────────────────────────────────── */
@@ -128,13 +131,21 @@ int main(int argc, char **argv)
         LOG_ERROR("One or more UPS modules failed to start.");
     }
 
+    ups_alarm_register_all();
+
+    if (alarm_bridge_start() != 0) {
+        LOG_ERROR("Alarm bridge failed to start.");
+    }
+
     LOG_INFO("All modules started. Waiting for shutdown signal …");
 
     while (g_running) {
         pause();
     }
 
+    alarm_bridge_stop();
     stop_ups_modules();
+    ups_alarm_manager_close();
 
     LOG_INFO("Shutdown complete.");
     return 0;
