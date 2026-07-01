@@ -7,9 +7,16 @@
  *  device_register_mapping_t  – one row in a per-unit table:
  *    device_address → pool_address (absolute position in internal_pool[])
  *
- *  device_map_profile_t       – describes one physical device unit
+ *  device_map_profile_t       – describes one physical device unit.
  *    Each unit has its own table; pool_address values are absolute and
  *    hardcoded in the table.  No runtime pool-base arithmetic required.
+ *
+ * Pool contract
+ * ─────────────
+ *  internal_pool[] always stores the raw register value read from the device.
+ *  No masking is applied at the ingest stage.  Consumers that need a masked
+ *  view call pool_read_masked_by_device_addr() and supply their own mask.
+ *  Bit-level alarm monitoring is handled by alarm_engine (ALARM_COND_BITMASK).
  *
  * Adding a new device unit
  * ────────────────────────
@@ -61,19 +68,23 @@ typedef enum {
  *  pool_address    – Absolute index into internal_pool[].  Hardcoded per unit;
  *                    no runtime base arithmetic.
  *  access          – Permission for external read/write requests.
- *  bit_mask        – Applied after read; 0xFFFF = pass-through.
  *  description     – Human-readable register name.
  *
  * Sorting
  * ───────
  *  Rows MUST be sorted by device_address ascending so that device_find_slot()
  *  (binary search) and segment reads both work correctly.
+ *
+ * Masking
+ * ───────
+ *  No bit_mask column.  The pool stores raw hardware values; masking is the
+ *  responsibility of the consumer (alarm_engine, CMOS, etc.).  Use
+ *  pool_read_masked_by_device_addr() when a masked view is needed.
  */
 typedef struct {
     uint16_t          device_address;  /**< FC03 register address on the device        */
     uint16_t          pool_address;    /**< Absolute position in internal_pool[]        */
     register_access_t access;          /**< Read/write permission for external requests */
-    uint16_t          bit_mask;        /**< Applied after read; 0xFFFF = pass-through   */
     const char       *description;
 } device_register_mapping_t;
 
@@ -117,8 +128,8 @@ const device_register_mapping_t *device_find_slot(
  * @brief Write a Modbus read buffer into the pool for one device unit.
  *
  * For each register in read_buffer[0..read_count-1], looks up
- * (start_device_address + i) in the profile table, applies bit_mask,
- * and stores the result at internal_pool[pool_address] (absolute).
+ * (start_device_address + i) in the profile table and stores the raw value
+ * at internal_pool[pool_address] (absolute).  No masking is applied.
  *
  * @param profile              Unit profile with the mapping table.
  * @param read_buffer          Values returned by FC03.
@@ -151,14 +162,11 @@ bool pool_write_register(uint16_t pool_address,
 /* ── Profile-assisted pool access (by device_address) ─────────────────── */
 
 /**
- * @brief Read a register value by its device_address (uses binary search).
+ * @brief Read a raw register value by its device_address (uses binary search).
  *
  * Looks up device_address in the profile table to find the absolute
- * pool_address, then performs a thread-safe pool read.
- *
- * Example:
- *   uint16_t mode;
- *   pool_read_by_device_addr(&ups1_profile, 0x00D0, &mode);
+ * pool_address, then performs a thread-safe pool read.  The returned value
+ * is the raw hardware value with no masking applied.
  *
  * @param profile         Unit profile containing the mapping table.
  * @param device_address  FC03 register address on the physical device.
@@ -168,6 +176,24 @@ bool pool_write_register(uint16_t pool_address,
 bool pool_read_by_device_addr(const device_map_profile_t *profile,
                               uint16_t                    device_address,
                               uint16_t                   *out_value);
+
+/**
+ * @brief Read a register value with a caller-supplied bit mask applied.
+ *
+ * Equivalent to pool_read_by_device_addr() followed by (raw & mask).
+ * Use this when the consumer needs only specific bits from a register
+ * (e.g. reading a status field within a combined status word).
+ *
+ * @param profile         Unit profile containing the mapping table.
+ * @param device_address  FC03 register address on the physical device.
+ * @param mask            Bit mask to apply: *out_value = raw & mask.
+ * @param out_value       Destination for the masked value.
+ * @return false if device_address is not in the table or index is out of range.
+ */
+bool pool_read_masked_by_device_addr(const device_map_profile_t *profile,
+                                     uint16_t                    device_address,
+                                     uint16_t                    mask,
+                                     uint16_t                   *out_value);
 
 /**
  * @brief Write a register value by its device_address (uses binary search).

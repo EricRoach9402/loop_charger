@@ -2,14 +2,15 @@
  * @file ups_map.c
  * @brief UPS register mapping tables – one independent table per physical unit.
  *
- * Table format:  { device_address, pool_address, access, bit_mask, description }
+ * Table format:  { device_address, pool_address, access, description }
  *
  *  device_address  – FC03 register address on the hardware.
  *  pool_address    – Absolute position in internal_pool[].  Unique per unit;
  *                    derived from the unit's pool base + its sequential offset.
  *  access          – ACCESS_RO / ACCESS_RW / ACCESS_WO for external requests.
- *  bit_mask        – Applied after read; 0xFFFF = pass-through.
  *
+ * Pool stores raw register values.  No masking is applied here.
+ * Consumers needing a masked view use pool_read_masked_by_device_addr().
  *
  * Rules
  * ─────
@@ -33,68 +34,68 @@
 /* ═══════════════════════════════════════════════════════════════════════════
  * UPS#1 – modbus_uid 1 – pool base 0x0000
  *
- *  device addr   pool addr    access     mask    description
+ *  device addr   pool addr    access     description
  * ═══════════════════════════════════════════════════════════════════════════ */
 static const device_register_mapping_t ups1_mapping_table[] = {
-    { 0x0000,  0x0000,  ACCESS_RO,  0xFFFF,  "UPS1_Warning_Information_1"         },
-    { 0x0001,  0x0001,  ACCESS_RO,  0xFFFF,  "UPS1_Warning_Information_2"         },
-    { 0x0002,  0x0002,  ACCESS_RO,  0xFFFF,  "UPS1_Warning_Information_3"         },
-    { 0x0003,  0x0003,  ACCESS_RO,  0xFFFF,  "UPS1_Warning_Information_4"         },
+    { 0x0000,  0x0000,  ACCESS_RO,  "UPS1_Warning_Information_1"         },
+    { 0x0001,  0x0001,  ACCESS_RO,  "UPS1_Warning_Information_2"         },
+    { 0x0002,  0x0002,  ACCESS_RO,  "UPS1_Warning_Information_3"         },
+    { 0x0003,  0x0003,  ACCESS_RO,  "UPS1_Warning_Information_4"         },
 
-    { 0x00BC,  0x0004,  ACCESS_RO,  0xFFFF,  "UPS1_P_Battery_Voltage"             },
-    { 0x00BD,  0x0005,  ACCESS_RO,  0xFFFF,  "UPS1_P_Battery_Discharging_Current" },
-    { 0x00BE,  0x0006,  ACCESS_RO,  0xFFFF,  "UPS1_P_Battery_Charging_Current"    },
-    { 0x00BF,  0x0007,  ACCESS_RO,  0xFFFF,  "UPS1_Battery_Capacity"              },
-    { 0x00C0,  0x0008,  ACCESS_RO,  0xFFFF,  "UPS1_Battery_Remain_Time"           },
-    { 0x00C1,  0x0009,  ACCESS_RO,  0xFFFF,  "UPS1_N_Battery_Voltage"             },
-    { 0x00C2,  0x000A,  ACCESS_RO,  0xFFFF,  "UPS1_N_Battery_Discharging_Current" },
-    { 0x00C3,  0x000B,  ACCESS_RO,  0xFFFF,  "UPS1_N_Battery_Charging_Current"    },
-    { 0x00CB,  0x000C,  ACCESS_RO,  0xFFFF,  "UPS1_Battery_Temperature"           },
+    { 0x00BC,  0x0004,  ACCESS_RO,  "UPS1_P_Battery_Voltage"             },
+    { 0x00BD,  0x0005,  ACCESS_RO,  "UPS1_P_Battery_Discharging_Current" },
+    { 0x00BE,  0x0006,  ACCESS_RO,  "UPS1_P_Battery_Charging_Current"    },
+    { 0x00BF,  0x0007,  ACCESS_RO,  "UPS1_Battery_Capacity"              },
+    { 0x00C0,  0x0008,  ACCESS_RO,  "UPS1_Battery_Remain_Time"           },
+    { 0x00C1,  0x0009,  ACCESS_RO,  "UPS1_N_Battery_Voltage"             },
+    { 0x00C2,  0x000A,  ACCESS_RO,  "UPS1_N_Battery_Discharging_Current" },
+    { 0x00C3,  0x000B,  ACCESS_RO,  "UPS1_N_Battery_Charging_Current"    },
+    { 0x00CB,  0x000C,  ACCESS_RO,  "UPS1_Battery_Temperature"           },
 
-    { 0x00CC,  0x000D,  ACCESS_RO,  0xFFFF,  "UPS1_Temperature_PFC"               },
-    { 0x00CD,  0x000E,  ACCESS_RO,  0xFFFF,  "UPS1_Temperature_INV"               },
-    { 0x00CE,  0x000F,  ACCESS_RO,  0xFFFF,  "UPS1_Temperature_Bypass"            },
-    { 0x00CF,  0x0010,  ACCESS_RO,  0xFFFF,  "UPS1_Max_Temperature"               },
+    { 0x00CC,  0x000D,  ACCESS_RO,  "UPS1_Temperature_PFC"               },
+    { 0x00CD,  0x000E,  ACCESS_RO,  "UPS1_Temperature_INV"               },
+    { 0x00CE,  0x000F,  ACCESS_RO,  "UPS1_Temperature_Bypass"            },
+    { 0x00CF,  0x0010,  ACCESS_RO,  "UPS1_Max_Temperature"               },
 
-    { 0x00D0,  0x0011,  ACCESS_RO,  0xFFFF,  "UPS1_Mode_Information"              },
-    { 0x00DE,  0x0012,  ACCESS_RW,  0xFFFF,  "UPS1_OT_Fault_Recovery_Value"       },
-    { 0x00DF,  0x0013,  ACCESS_RW,  0xFFFF,  "UPS1_OT_Warning_Trigger_Value"      },
-    { 0x00E0,  0x0014,  ACCESS_RW,  0xFFFF,  "UPS1_OT_Warning_Recovery_Value"     },
+    { 0x00D0,  0x0011,  ACCESS_RO,  "UPS1_Mode_Information"              },
+    { 0x00DE,  0x0012,  ACCESS_RW,  "UPS1_OT_Fault_Recovery_Value"       },
+    { 0x00DF,  0x0013,  ACCESS_RW,  "UPS1_OT_Warning_Trigger_Value"      },
+    { 0x00E0,  0x0014,  ACCESS_RW,  "UPS1_OT_Warning_Recovery_Value"     },
 
-    { 0x02A2,  0x0015,  ACCESS_RO,  0xFFFF,  "UPS1_Fault_Information"             },
+    { 0x02A2,  0x0015,  ACCESS_RO,  "UPS1_Fault_Information"             },
 
-    { 0x0364,  0x0016,  ACCESS_RW,  0xFFFF,  "UPS1_Battery_Shutdown_Voltage"      },
-    { 0x036A,  0x0017,  ACCESS_RW,  0xFFFF,  "UPS1_Battery_Low_Voltage"           },
+    { 0x0364,  0x0016,  ACCESS_RW,  "UPS1_Battery_Shutdown_Voltage"      },
+    { 0x036A,  0x0017,  ACCESS_RW,  "UPS1_Battery_Low_Voltage"           },
 
-    { 0x03E0,  0x0018,  ACCESS_RO,  0xFFFF,  "UPS1_Protocol_ID_Inquiry"           },
-    { 0x03E1,  0x0019,  ACCESS_RO,  0xFFFF,  "UPS1_PFC_FW_Version_1"              },
-    { 0x03E2,  0x001A,  ACCESS_RO,  0xFFFF,  "UPS1_PFC_FW_Version_2"              },
-    { 0x03E3,  0x001B,  ACCESS_RO,  0xFFFF,  "UPS1_PFC_FW_Version_3"              },
-    { 0x03E4,  0x001C,  ACCESS_RO,  0xFFFF,  "UPS1_PFC_FW_Version_4"              },
-    { 0x03E5,  0x001D,  ACCESS_RO,  0xFFFF,  "UPS1_PFC_FW_Version_5"              },
-    { 0x03E6,  0x001E,  ACCESS_RO,  0xFFFF,  "UPS1_INV_FW_Version_1"              },
-    { 0x03E7,  0x001F,  ACCESS_RO,  0xFFFF,  "UPS1_INV_FW_Version_2"              },
-    { 0x03E8,  0x0020,  ACCESS_RO,  0xFFFF,  "UPS1_INV_FW_Version_3"              },
-    { 0x03E9,  0x0021,  ACCESS_RO,  0xFFFF,  "UPS1_INV_FW_Version_4"              },
-    { 0x03EA,  0x0022,  ACCESS_RO,  0xFFFF,  "UPS1_INV_FW_Version_5"              },
-    { 0x0403,  0x0023,  ACCESS_RO,  0xFFFF,  "UPS1_COM_FW_Version_1"              },
-    { 0x0404,  0x0024,  ACCESS_RO,  0xFFFF,  "UPS1_COM_FW_Version_2"              },
-    { 0x0405,  0x0025,  ACCESS_RO,  0xFFFF,  "UPS1_COM_FW_Version_3"              },
-    { 0x0406,  0x0026,  ACCESS_RO,  0xFFFF,  "UPS1_COM_FW_Version_4"              },
-    { 0x0407,  0x0027,  ACCESS_RO,  0xFFFF,  "UPS1_COM_FW_Version_5"              },
-    { 0x0408,  0x0028,  ACCESS_RO,  0xFFFF,  "UPS1_LCD_FW_Version_1"              },
-    { 0x0409,  0x0029,  ACCESS_RO,  0xFFFF,  "UPS1_LCD_FW_Version_2"              },
-    { 0x040A,  0x002A,  ACCESS_RO,  0xFFFF,  "UPS1_LCD_FW_Version_3"              },
-    { 0x040B,  0x002B,  ACCESS_RO,  0xFFFF,  "UPS1_LCD_FW_Version_4"              },
-    { 0x040C,  0x002C,  ACCESS_RO,  0xFFFF,  "UPS1_LCD_FW_Version_5"              },
-    { 0x0412,  0x002D,  ACCESS_RO,  0xFFFF,  "UPS1_FBPN_1"                        },
-    { 0x0413,  0x002E,  ACCESS_RO,  0xFFFF,  "UPS1_FBPN_2"                        },
-    { 0x0414,  0x002F,  ACCESS_RO,  0xFFFF,  "UPS1_FBPN_3"                        },
-    { 0x0415,  0x0030,  ACCESS_RO,  0xFFFF,  "UPS1_FBPN_4"                        },
-    { 0x0416,  0x0031,  ACCESS_RO,  0xFFFF,  "UPS1_FBPN_5"                        },
-    { 0x04B8,  0x0032,  ACCESS_RO,  0xFFFF,  "UPS1_Modbus_FW_Version_1"           },
-    { 0x04B9,  0x0033,  ACCESS_RO,  0xFFFF,  "UPS1_Modbus_FW_Version_2"           },
-    { 0x05B0,  0x0034,  ACCESS_RW,  0xFFFF,  "UPS1_Battery_High_Voltage"          },
+    { 0x03E0,  0x0018,  ACCESS_RO,  "UPS1_Protocol_ID_Inquiry"           },
+    { 0x03E1,  0x0019,  ACCESS_RO,  "UPS1_PFC_FW_Version_1"              },
+    { 0x03E2,  0x001A,  ACCESS_RO,  "UPS1_PFC_FW_Version_2"              },
+    { 0x03E3,  0x001B,  ACCESS_RO,  "UPS1_PFC_FW_Version_3"              },
+    { 0x03E4,  0x001C,  ACCESS_RO,  "UPS1_PFC_FW_Version_4"              },
+    { 0x03E5,  0x001D,  ACCESS_RO,  "UPS1_PFC_FW_Version_5"              },
+    { 0x03E6,  0x001E,  ACCESS_RO,  "UPS1_INV_FW_Version_1"              },
+    { 0x03E7,  0x001F,  ACCESS_RO,  "UPS1_INV_FW_Version_2"              },
+    { 0x03E8,  0x0020,  ACCESS_RO,  "UPS1_INV_FW_Version_3"              },
+    { 0x03E9,  0x0021,  ACCESS_RO,  "UPS1_INV_FW_Version_4"              },
+    { 0x03EA,  0x0022,  ACCESS_RO,  "UPS1_INV_FW_Version_5"              },
+    { 0x0403,  0x0023,  ACCESS_RO,  "UPS1_COM_FW_Version_1"              },
+    { 0x0404,  0x0024,  ACCESS_RO,  "UPS1_COM_FW_Version_2"              },
+    { 0x0405,  0x0025,  ACCESS_RO,  "UPS1_COM_FW_Version_3"              },
+    { 0x0406,  0x0026,  ACCESS_RO,  "UPS1_COM_FW_Version_4"              },
+    { 0x0407,  0x0027,  ACCESS_RO,  "UPS1_COM_FW_Version_5"              },
+    { 0x0408,  0x0028,  ACCESS_RO,  "UPS1_LCD_FW_Version_1"              },
+    { 0x0409,  0x0029,  ACCESS_RO,  "UPS1_LCD_FW_Version_2"              },
+    { 0x040A,  0x002A,  ACCESS_RO,  "UPS1_LCD_FW_Version_3"              },
+    { 0x040B,  0x002B,  ACCESS_RO,  "UPS1_LCD_FW_Version_4"              },
+    { 0x040C,  0x002C,  ACCESS_RO,  "UPS1_LCD_FW_Version_5"              },
+    { 0x0412,  0x002D,  ACCESS_RO,  "UPS1_FBPN_1"                        },
+    { 0x0413,  0x002E,  ACCESS_RO,  "UPS1_FBPN_2"                        },
+    { 0x0414,  0x002F,  ACCESS_RO,  "UPS1_FBPN_3"                        },
+    { 0x0415,  0x0030,  ACCESS_RO,  "UPS1_FBPN_4"                        },
+    { 0x0416,  0x0031,  ACCESS_RO,  "UPS1_FBPN_5"                        },
+    { 0x04B8,  0x0032,  ACCESS_RO,  "UPS1_Modbus_FW_Version_1"           },
+    { 0x04B9,  0x0033,  ACCESS_RO,  "UPS1_Modbus_FW_Version_2"           },
+    { 0x05B0,  0x0034,  ACCESS_RW,  "UPS1_Battery_High_Voltage"          },
 };
 
 const device_map_profile_t ups1_profile = {

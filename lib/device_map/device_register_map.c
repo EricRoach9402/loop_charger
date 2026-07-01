@@ -4,6 +4,9 @@
  *
  * Pool addresses are absolute: each per-unit mapping table hardcodes its
  * pool_address values.  No runtime pool-base arithmetic is performed here.
+ *
+ * The pool stores raw register values.  No masking is applied at this layer.
+ * Consumers needing a masked view use pool_read_masked_by_device_addr().
  */
 
 #include <string.h>
@@ -80,14 +83,15 @@ void device_map_read_to_pool(const device_map_profile_t *profile,
             continue;
         }
 
-        uint16_t val = (uint16_t)(read_buffer[i] & m->bit_mask);
+        /* Store the raw value; no masking at the ingest stage. */
+        uint16_t raw = read_buffer[i];
 
         pthread_rwlock_wrlock(&internal_pool_lock);
-        internal_pool[m->pool_address] = val;
+        internal_pool[m->pool_address] = raw;
         pthread_rwlock_unlock(&internal_pool_lock);
 
         LOG_VERBOSE("[device_map] dev 0x%04X -> pool[0x%04X] = 0x%04X",
-                    dev_addr, m->pool_address, val);
+                    dev_addr, m->pool_address, raw);
     }
 }
 
@@ -137,6 +141,24 @@ bool pool_read_by_device_addr(const device_map_profile_t *profile,
     return pool_read_register(m->pool_address, out_value);
 }
 
+bool pool_read_masked_by_device_addr(const device_map_profile_t *profile,
+                                     uint16_t                    device_address,
+                                     uint16_t                    mask,
+                                     uint16_t                   *out_value)
+{
+    if (!profile || !out_value) {
+        return false;
+    }
+
+    uint16_t raw = 0u;
+    if (!pool_read_by_device_addr(profile, device_address, &raw)) {
+        return false;
+    }
+
+    *out_value = (uint16_t)(raw & mask);
+    return true;
+}
+
 bool pool_write_by_device_addr(const device_map_profile_t *profile,
                                uint16_t                    device_address,
                                uint16_t                    value)
@@ -168,7 +190,6 @@ uint8_t check_register_access_range(const device_map_profile_t *profile,
 
     for (uint16_t pa = pool_start; pa <= pool_end; pa++) {
 
-        /* Search the table for this pool address. */
         bool found = false;
 
         for (size_t i = 0; i < profile->table_count; i++) {
@@ -179,10 +200,6 @@ uint8_t check_register_access_range(const device_map_profile_t *profile,
             found = true;
             register_access_t reg_access = profile->table[i].access;
 
-            /*
-             * Read request on a write-only register: reject.
-             * Write request on a read-only register: reject.
-             */
             if (required_access == ACCESS_RO && reg_access == ACCESS_WO) {
                 LOG_WARNING("[device_map] read rejected: pool 0x%04X is write-only (%s)",
                             pa, profile->table[i].description);
