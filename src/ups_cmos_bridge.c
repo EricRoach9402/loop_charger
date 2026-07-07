@@ -100,12 +100,11 @@ static int parse_token(const char *src, const char *key,
 static void on_test_cmd(const char *topic, const char *value)
 {
     (void)topic;
-    (void)value;
     LOG_INFO("[CMOS Bridge] test command received: '%s'", value);
 
-    char uid_str[16] = "1";
-    char addr_str[16];
-    char val_str[16];
+    char uid_str[16] = "1"; // this project only supports one UPS module, so we hardcode uid=1
+    char addr_str[16] = "0x00DE"; 
+    char val_str[16] = value;
     uint8_t  uid;
     uint16_t addr;
     uint16_t val;
