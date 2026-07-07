@@ -33,7 +33,7 @@
 
 /* ── CMOS connection constants ────────────────────────────────────────── */
 #define BRIDGE_MASTER_IP        "127.0.0.1"
-#define BRIDGE_MASTER_PORT      10000
+#define BRIDGE_MASTER_PORT      17500
 #define BRIDGE_PUB_PORT         12000       /* listen port for read responses  */
 #define BRIDGE_NODE_NAME        "UPS_NODE"  /* node name for master registration */
 #define BRIDGE_SUB_TOPIC        "UPS_SUB"   /* topic for write/read requests   */
@@ -96,6 +96,51 @@ static int parse_token(const char *src, const char *key,
 }
 
 /* ── CMOS callbacks ───────────────────────────────────────────────────── */
+
+static void on_test_cmd(const char *topic, const char *value)
+{
+    (void)topic;
+    (void)value;
+    LOG_INFO("[CMOS Bridge] test command received: '%s'", value);
+
+    char uid_str[16] = "1";
+    char addr_str[16];
+    char val_str[16];
+    uint8_t  uid;
+    uint16_t addr;
+    uint16_t val;
+
+    uid  = (uint8_t)atoi(uid_str);
+    addr = (uint16_t)strtoul(addr_str, NULL, 0);
+    val  = (uint16_t)strtoul(val_str,  NULL, 0);
+
+    const device_map_profile_t *profile = ups_find_profile_by_uid(uid);
+    if (!profile) {
+        LOG_WARNING("[CMOS Bridge] write: unknown uid=%u", uid);
+        return;
+    }
+
+    const device_register_mapping_t *entry = device_find_slot(profile, addr);
+    if (!entry) {
+        LOG_WARNING("[CMOS Bridge] write: addr 0x%04X not mapped in profile "
+                    "uid=%u", addr, uid);
+        return;
+    }
+
+    if (entry->access == ACCESS_RO) {
+        LOG_WARNING("[CMOS Bridge] write: addr 0x%04X is ACCESS_RO (uid=%u) "
+                    "– rejected", addr, uid);
+        return;
+    }
+
+    if (ups_cmd_push(uid, addr, &val, 1, UPS_WRITE_MODE_AUTO) != 0) {
+        LOG_ERROR("[CMOS Bridge] write: command queue full for uid=%u "
+                  "addr=0x%04X", uid, addr);
+    }
+
+    LOG_DEBUG("[CMOS Bridge] write queued: uid=%u addr=0x%04X val=%u",
+              uid, addr, val);
+}
 
 /**
  * @brief CMOS callback for write commands.
