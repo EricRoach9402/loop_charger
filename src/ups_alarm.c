@@ -51,10 +51,10 @@
 static const alarm_entry_t ups_alarm_table[] = {
     { 0x0000, ALARM_COND_BITMASK,  0x0000, 0x0100, UPS_ERR_WARNING_1,        "warning reg1 bit 0x0100"      },
     { 0x0000, ALARM_COND_BITMASK,  0x0000, 0x0010, UPS_ERR_WARNING_2,        "warning reg1 bit 0x0010"      },
-    { 0x00BF, ALARM_COND_RANGE,    0x0014, 0xFFFF, UPS_ERR_BATT_LOW,         "battery capacity < 20%"       },
-    { 0x00CB, ALARM_COND_RANGE,    0x0000, 0x0258, UPS_ERR_BATT_TEMP_HIGH,   "battery temperature high"     },
-    { 0x00D0, ALARM_COND_RANGE,    0x00B4, 0x00F0, UPS_ERR_OUTPUT_VOLT_HIGH, "output voltage out of range"  },
-    { 0x0001, ALARM_COND_CHANGE,   0x0000, 0x0000, UPS_ERR_FAULT_CHANGE,     "fault register changed"       },
+    { 0x0002, ALARM_COND_RANGE,    0x0014, 0xFFFF, UPS_ERR_BATT_LOW,         "battery capacity < 20%"       },
+    { 0x0003, ALARM_COND_RANGE,    0x0000, 0x0258, UPS_ERR_BATT_TEMP_HIGH,   "battery temperature high"     },
+    { 0x0004, ALARM_COND_RANGE,    0x00B4, 0x00F0, UPS_ERR_OUTPUT_VOLT_HIGH, "output voltage out of range"  },
+    { 0x0005, ALARM_COND_CHANGE,   0x0000, 0x0000, UPS_ERR_FAULT_CHANGE,     "fault register changed"       },
 };
 
 /* Per-unit mutable runtime state – one slot set per UPS unit. */

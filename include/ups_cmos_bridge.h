@@ -7,22 +7,20 @@
  *  - Spawns a dedicated CMOS subscriber thread (cmos_sub_spin_ctx is blocking,
  *    so it must never run inside init_callback / process_callback).
  *  - Spawns a publisher poll thread that keeps the read-response publisher alive.
- *  - CMOS write callback parses the message, validates register access, and
- *    enqueues the command via ups_cmd_push().
- *  - CMOS read callback reads the cached pool value and publishes the result.
+ *  - The HMI only sends cmd + value (it has no notion of uid/addr). Each HMI
+ *    command (topic="hmi_ups", type="command", key=<cmd name>) is routed to
+ *    its own on_xxx_cmd handler, which owns the register address for that
+ *    command, converts value to uint16_t, and delegates the shared
+ *    validate/enqueue or validate/read flow to the internal on_write() /
+ *    on_read() helpers (see ups_cmos_bridge.c).
  *
  * CMOS message protocol (publisher side)
  * ───────────────────────────────────────
- *  Topic: "ups"
+ *  Topic: "hmi_ups", type="command", key=<cmd name> (e.g. "ups_test")
+ *    cmos_publish(NULL, "command", "ups_test", "<uint16 value>");
  *
- *  Write single register:
- *    cmos_publish(NULL, "modbus", "write", "uid=1,addr=0x00DE,val=100");
- *
- *  Read register (result published to topic "ups_resp"):
- *    cmos_publish(NULL, "modbus", "read", "uid=1,addr=0x00D0");
- *
- * Read response (subscribe to topic "ups_resp"):
- *    type=modbus_resp  key=<addr-hex>  value=<uint16 decimal>
+ *  Periodic status push (topic "ups", see cmos_pub_poll_thread):
+ *    key=ups_warning_1 / ups_battery_voltage / ... value=<uint16 decimal>
  *
  * Lifecycle
  * ─────────

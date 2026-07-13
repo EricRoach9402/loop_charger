@@ -6,12 +6,6 @@
  * modbus_uid in config.json.  Pool addresses are absolute and hardcoded
  * in each unit's mapping table in ups_map.c.
  *
- * Pool layout
- * ───────────
- *  UPS#1  (modbus_uid = 1):  pool 0x0000 – 0x0034  (53 registers)
- *  UPS#2  (modbus_uid = 2):  pool 0x0035 – 0x0069  (53 registers)
- *  UPS#3  (modbus_uid = 3):  pool 0x006A – 0x009E  (53 registers)
- *
  * Adding a new UPS unit
  * ─────────────────────
  *  1. Add a mapping table in ups_map.c with a unique pool_address range.
