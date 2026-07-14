@@ -4,11 +4,10 @@
             "name": "UPS#1",
             "enabled": true,
             "modbus_uid": 1,
-            "modbus_format": "TCP",
+            "modbus_format": "RTU",
             "modbus_role": "Slave",
-            "path": "eth1",
-            "ip": "127.0.0.1",
-            "port": 502
+            "path": "/dev/ttyAP1",
+            "baud_rate": 9600
         }
     ]
 }

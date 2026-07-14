@@ -40,7 +40,7 @@
 #define BRIDGE_NODE_NAME        "ups_node"  /* node name for master registration */
 #define BRIDGE_SUB_HMI_TOPIC    "hmi_ups"   /* topic for write/read requests   */
 #define BRIDGE_PUB_TOPIC        "ups"       /* topic for read responses        */
-#define BRIDGE_PUB_POLL_US      500000u      /* 10 ms poll interval             */
+#define BRIDGE_PUB_POLL_US      500000u     /* 500 ms poll interval             */
 
 /* this project only supports one UPS module, so uid is always fixed */
 #define UPS_BRIDGE_DEFAULT_UID  1u

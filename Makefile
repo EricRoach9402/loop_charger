@@ -78,6 +78,7 @@ SRCS += \
 	lib/cmos/cmos_sub.c \
 	lib/modbus/modbus_tcp.c \
 	lib/modbus/modbus_tcp_client.c \
+	lib/modbus/modbus_rtu_client.c \
 	lib/device_map/device_register_map.c \
 	lib/log/log.c \
 	lib/sqlite3/sqlite3.c

@@ -1,14 +1,22 @@
 /**
  * @file ups_module.c
- * @brief UPS polling module – Modbus TCP client implementation.
+ * @brief UPS polling module – Modbus TCP or RTU client implementation.
+ *
+ * Transport selection
+ * ───────────────────
+ *  Each UPS unit's transport (TCP socket or RTU serial port) is selected at
+ *  runtime by cfg->format (config.json "modbus_format": "TCP" | "RTU").
+ *  Switching a unit between TCP and RTU is purely a configuration change –
+ *  no source change is required.  All callback and log naming below is kept
+ *  transport-neutral for this reason.
  *
  * Callback design
  * ───────────────
- *  ups_tcp_init_callback    – connect to the UPS TCP server.
- *  ups_tcp_process_callback – drain write queue, then segment-read all
- *                             registers → write to pool.
- *  ups_tcp_error_callback   – disconnect and schedule reconnect.
- *  ups_msg_callback         – execute FC06 / FC16 write on a UPS unit.
+ *  ups_init_callback    – connect the unit's transport (TCP or RTU).
+ *  ups_process_callback – drain write queue, then segment-read all
+ *                         registers → write to pool.
+ *  ups_error_callback   – disconnect and schedule reconnect.
+ *  ups_msg_callback     – execute FC06 / FC16 write on a UPS unit.
  *
  * CMOS bridge integration
  * ───────────────────────
@@ -45,6 +53,7 @@
 #include "ups_cmos_bridge.h"
 #include "device_register_map.h"
 #include "modbus_tcp_client.h"
+#include "modbus_rtu_client.h"
 #include "ups/ups_map.h"
 #include "log.h"
 
@@ -79,7 +88,8 @@ typedef struct {
 typedef struct {
     module_config_t            *cfg;
     const device_map_profile_t *profile;
-    mb_tcp_client_ctx_t         tcp_ctx;
+    mb_tcp_client_ctx_t         tcp_ctx;   /* used when cfg->format == MODBUS_FORMAT_TCP */
+    mb_rtu_client_ctx_t         rtu_ctx;   /* used when cfg->format == MODBUS_FORMAT_RTU */
     module_callbacks_t          callbacks;
     pthread_t                   thread;
     volatile sig_atomic_t       running;
@@ -192,10 +202,113 @@ static void interruptible_sleep_ms(const ups_unit_t *unit, uint32_t duration_ms)
     }
 }
 
+/* ── Transport dispatch (TCP / RTU) ───────────────────────────────────── *
+ *
+ * These are the only functions that know about mb_tcp_client_* versus
+ * mb_rtu_client_*.  Every other function in this file (callbacks, queue
+ * drain, segmented scan) is transport-neutral and simply calls into this
+ * section based on unit->cfg->format.
+ */
+
+/**
+ * @brief Connect the unit's transport (TCP socket or RTU serial port).
+ *
+ * RTU additionally probes the device with one FC03 read after opening the
+ * serial port, since a successful open only proves the local device node
+ * exists – it says nothing about whether a slave is actually present on
+ * the bus.  TCP does not need this: a successful connect() already proves
+ * a peer accepted the socket.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+static int unit_connect(ups_unit_t *unit)
+{
+    module_config_t *cfg = unit->cfg;
+
+    if (cfg->format == MODBUS_FORMAT_TCP) {
+        mb_tcp_client_config_t tcp_cfg = {
+            .remote_host          = cfg->ip,
+            .port                 = (cfg->port > 0) ? (uint16_t)cfg->port : 502u,
+            .unit_id              = (uint8_t)cfg->modbus_uid,
+            .connect_timeout_sec  = 5,
+            .response_timeout_ms  = 1000,
+            .logv                 = NULL,
+            .log_userdata         = NULL,
+        };
+
+        LOG_INFO("[UPS] %s: connecting to %s:%d uid=%d",
+                 cfg->name, cfg->ip, cfg->port, cfg->modbus_uid);
+
+        if (mb_tcp_client_connect(&unit->tcp_ctx, &tcp_cfg) != 0) {
+            LOG_ERROR("[UPS] %s: TCP connection failed.", cfg->name);
+            return -1;
+        }
+        return 0;
+    }
+
+    mb_rtu_client_config_t rtu_cfg = {
+        .serial_path          = cfg->path,
+        .baud_rate            = (uint32_t)cfg->baud_rate,
+        .unit_id              = (uint8_t)cfg->modbus_uid,
+        .response_timeout_ms  = 1000u,
+    };
+
+    LOG_INFO("[UPS] %s: opening %s @ %u baud uid=%d",
+             cfg->name, cfg->path, cfg->baud_rate, cfg->modbus_uid);
+
+    if (mb_rtu_client_connect(&unit->rtu_ctx, &rtu_cfg) != 0) {
+        LOG_ERROR("[UPS] %s: failed to open serial port %s.",
+                  cfg->name, cfg->path);
+        return -1;
+    }
+
+    if (unit->profile->table_count > 0) {
+        uint16_t probe_addr = unit->profile->table[0].device_address;
+
+        if (mb_rtu_client_probe_device(&unit->rtu_ctx, probe_addr, 1) !=
+            MB_RTU_CLIENT_OK) {
+            LOG_ERROR("[UPS] %s: device not responding on %s (uid=%d).",
+                      cfg->name, cfg->path, cfg->modbus_uid);
+            mb_rtu_client_disconnect(&unit->rtu_ctx);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+/**
+ * @brief Disconnect the unit's transport (TCP socket or RTU serial port).
+ */
+static void unit_disconnect(ups_unit_t *unit)
+{
+    if (unit->cfg->format == MODBUS_FORMAT_TCP) {
+        mb_tcp_client_disconnect(&unit->tcp_ctx);
+    } else {
+        mb_rtu_client_disconnect(&unit->rtu_ctx);
+    }
+}
+
+/**
+ * @brief FC03 – read holding registers via whichever transport is active.
+ *
+ * @return 0 on success, a positive Modbus exception code, or a negative
+ *         transport-specific error code (MB_TCP_CLIENT_ERR_* / MB_RTU_CLIENT_ERR_*).
+ */
+static int unit_read_holding_registers(ups_unit_t *unit, uint16_t addr,
+                                       uint16_t count, uint16_t *out)
+{
+    if (unit->cfg->format == MODBUS_FORMAT_TCP) {
+        return mb_tcp_client_read_holding_registers(&unit->tcp_ctx, addr, count, out);
+    }
+    return mb_rtu_client_read_holding_registers(&unit->rtu_ctx, addr, count, out);
+}
+
 /**
  * @brief Execute a Modbus write (FC06 or FC16) directly on a unit.
  *
  * Shared by ups_msg_callback() and the queue-drain path in process_callback.
+ * Dispatches to the TCP or RTU client depending on unit->cfg->format.
  * On failure, logs the error and returns -1 (does NOT increment comm_fail_count
  * – a write failure is an operational error, not a connectivity loss).
  */
@@ -205,41 +318,47 @@ static int write_registers_to_device(ups_unit_t *unit,
                                      uint16_t    count,
                                      ups_write_mode_t mode)
 {
-    int result;
+    bool is_tcp = (unit->cfg->format == MODBUS_FORMAT_TCP);
+    int  result;
 
     switch (mode) {
     case UPS_WRITE_MODE_FC06:
         if (count != 1) {
-            LOG_ERROR("[UPS TCP] %s: FC06 requires count=1 (got %u) at 0x%04X.",
+            LOG_ERROR("[UPS] %s: FC06 requires count=1 (got %u) at 0x%04X.",
                       unit->cfg->name, count, addr);
             return -1;
         }
-        result = mb_tcp_client_write_single_register(
-                     &unit->tcp_ctx, addr, values[0]);
+        result = is_tcp
+                 ? mb_tcp_client_write_single_register(&unit->tcp_ctx, addr, values[0])
+                 : mb_rtu_client_write_single_register(&unit->rtu_ctx, addr, values[0]);
         break;
     case UPS_WRITE_MODE_FC16:
-        result = mb_tcp_client_write_multiple_registers(
-                     &unit->tcp_ctx, addr, count, values);
+        result = is_tcp
+                 ? mb_tcp_client_write_multiple_registers(&unit->tcp_ctx, addr, count, values)
+                 : mb_rtu_client_write_multiple_registers(&unit->rtu_ctx, addr, count, values);
         break;
     case UPS_WRITE_MODE_AUTO:
     default:
         if (count == 1) {
-            result = mb_tcp_client_write_single_register(
-                         &unit->tcp_ctx, addr, values[0]);
+            result = is_tcp
+                     ? mb_tcp_client_write_single_register(&unit->tcp_ctx, addr, values[0])
+                     : mb_rtu_client_write_single_register(&unit->rtu_ctx, addr, values[0]);
         } else {
-            result = mb_tcp_client_write_multiple_registers(
-                         &unit->tcp_ctx, addr, count, values);
+            result = is_tcp
+                     ? mb_tcp_client_write_multiple_registers(&unit->tcp_ctx, addr, count, values)
+                     : mb_rtu_client_write_multiple_registers(&unit->rtu_ctx, addr, count, values);
         }
         break;
     }
 
-    if (result != MB_TCP_CLIENT_OK) {
-        LOG_ERROR("[UPS TCP] %s: write to 0x%04X failed (err %d).",
+    /* MB_TCP_CLIENT_OK and MB_RTU_CLIENT_OK are both 0. */
+    if (result != 0) {
+        LOG_ERROR("[UPS] %s: write to 0x%04X failed (err %d).",
                   unit->cfg->name, addr, result);
         return -1;
     }
 
-    LOG_DEBUG("[UPS TCP] %s: wrote %u register(s) at 0x%04X.",
+    LOG_DEBUG("[UPS] %s: wrote %u register(s) at 0x%04X.",
               unit->cfg->name, count, addr);
     return 0;
 }
@@ -247,46 +366,32 @@ static int write_registers_to_device(ups_unit_t *unit,
 /* ── Callbacks ────────────────────────────────────────────────────────── */
 
 /**
- * @brief init_callback – establish Modbus TCP connection to the UPS.
+ * @brief init_callback – connect the unit's transport (TCP or RTU).
  *
  * @param cfg  Module configuration.
  * @return 0 on success, -1 on failure.
  */
-int ups_tcp_init_callback(module_config_t *cfg)
+int ups_init_callback(module_config_t *cfg)
 {
     if (!cfg) {
-        LOG_ERROR("[UPS TCP] Invalid configuration.");
+        LOG_ERROR("[UPS] Invalid configuration.");
         return -1;
     }
 
     ups_unit_t *unit = ups_unit_from_config(cfg);
     if (!unit) {
-        LOG_ERROR("[UPS TCP] %s: unit not found.", cfg->name);
+        LOG_ERROR("[UPS] %s: unit not found.", cfg->name);
         return -1;
     }
 
-    mb_tcp_client_config_t client_cfg = {
-        .remote_host          = cfg->ip,
-        .port                 = (cfg->port > 0) ? (uint16_t)cfg->port : 502u,
-        .unit_id              = (uint8_t)cfg->modbus_uid,
-        .connect_timeout_sec  = 5,
-        .response_timeout_ms  = 1000,
-        .logv                 = NULL,
-        .log_userdata         = NULL,
-    };
-
-    LOG_INFO("[UPS TCP] %s: connecting to %s:%d uid=%d",
-             cfg->name, cfg->ip, cfg->port, cfg->modbus_uid);
-
-    if (mb_tcp_client_connect(&unit->tcp_ctx, &client_cfg) != 0) {
-        LOG_ERROR("[UPS TCP] %s: connection failed.", cfg->name);
+    if (unit_connect(unit) != 0) {
         return -1;
     }
 
     unit->comm_fail_count = 0;
     cfg->connection_state = CONNECTION_CONNECTED;
 
-    LOG_INFO("[UPS TCP] %s: connected.", cfg->name);
+    LOG_INFO("[UPS] %s: connected.", cfg->name);
     return 0;
 }
 
@@ -305,7 +410,7 @@ int ups_tcp_init_callback(module_config_t *cfg)
  * @param cfg  Module configuration.
  * @return 0 on success, -1 on communication failure.
  */
-int ups_tcp_process_callback(module_config_t *cfg)
+int ups_process_callback(module_config_t *cfg)
 {
     if (!cfg) {
         return -1;
@@ -320,7 +425,7 @@ int ups_tcp_process_callback(module_config_t *cfg)
     ups_write_cmd_t cmd;
     while (queue_pop(&unit->cmd_queue, &cmd) == 0) {
         if (write_registers_to_device(unit, cmd.addr, cmd.values, cmd.count, cmd.mode) != 0) {
-            LOG_WARNING("[UPS TCP] %s: queued write to 0x%04X failed, "
+            LOG_WARNING("[UPS] %s: queued write to 0x%04X failed, "
                         "continuing scan.", cfg->name, cmd.addr);
         }
     }
@@ -352,12 +457,11 @@ int ups_tcp_process_callback(module_config_t *cfg)
         uint16_t start = profile->table[seg_start].device_address;
         uint16_t count = (uint16_t)seg_len;
 
-        int result = mb_tcp_client_read_holding_registers(
-                         &unit->tcp_ctx, start, count, buf);
+        int result = unit_read_holding_registers(unit, start, count, buf);
 
-        if (result != MB_TCP_CLIENT_OK) {
+        if (result != 0) {
             unit->comm_fail_count++;
-            LOG_WARNING("[UPS TCP] %s read 0x%04X len %u failed (err %d, fail %d/%d)",
+            LOG_WARNING("[UPS] %s read 0x%04X len %u failed (err %d, fail %d/%d)",
                         cfg->name, start, count, result,
                         unit->comm_fail_count, UPS_COMM_FAIL_THRESHOLD);
 
@@ -386,7 +490,7 @@ int ups_tcp_process_callback(module_config_t *cfg)
  * @param connection_state  New connection state (CONNECTION_DISCONNECTED).
  * @return 0 (reconnect is managed by the thread loop).
  */
-int ups_tcp_error_callback(module_config_t *cfg, int connection_state)
+int ups_error_callback(module_config_t *cfg, int connection_state)
 {
     if (!cfg) {
         return 0;
@@ -394,13 +498,13 @@ int ups_tcp_error_callback(module_config_t *cfg, int connection_state)
 
     ups_unit_t *unit = ups_unit_from_config(cfg);
     if (unit) {
-        mb_tcp_client_disconnect(&unit->tcp_ctx);
+        unit_disconnect(unit);
         unit->comm_fail_count = 0;
     }
 
     cfg->connection_state = (connection_state_t)connection_state;
 
-    LOG_WARNING("[UPS TCP] %s: disconnected (state=%d). Retrying in %u ms …",
+    LOG_WARNING("[UPS] %s: disconnected (state=%d). Retrying in %u ms …",
                 cfg->name, connection_state, UPS_RECONNECT_DELAY_MS);
 
     if (unit) {
@@ -436,7 +540,7 @@ int ups_msg_callback(module_config_t *cfg,
 
     ups_unit_t *unit = ups_unit_from_config(cfg);
     if (!unit) {
-        LOG_ERROR("[UPS TCP] %s: msg_callback – unit not found.", cfg->name);
+        LOG_ERROR("[UPS] %s: msg_callback – unit not found.", cfg->name);
         return -1;
     }
 
@@ -451,19 +555,19 @@ int ups_msg_callback(module_config_t *cfg,
  *  connect → segment reads → write pool → wait for next poll interval
  *          → on failure: disconnect → wait → reconnect
  */
-static void *ups_tcp_thread(void *arg)
+static void *ups_thread(void *arg)
 {
     ups_unit_t *unit = (ups_unit_t *)arg;
     module_config_t *cfg  = unit->cfg;
 
-    LOG_INFO("[UPS TCP] Thread started: %s (profile=%s uid=%d)",
+    LOG_INFO("[UPS] Thread started: %s (profile=%s uid=%d)",
              cfg->name, unit->profile->name, cfg->modbus_uid);
 
     while (unit->running) {
 
         /* init --------------------------------------------------------- */
         if (unit->callbacks.init_callback(cfg) != 0) {
-            LOG_ERROR("[UPS TCP] %s: init failed, will retry.", cfg->name);
+            LOG_ERROR("[UPS] %s: init failed, will retry.", cfg->name);
             interruptible_sleep_ms(unit, UPS_RECONNECT_DELAY_MS);
             continue;
         }
@@ -479,8 +583,8 @@ static void *ups_tcp_thread(void *arg)
         }
     }
 
-    mb_tcp_client_disconnect(&unit->tcp_ctx);
-    LOG_INFO("[UPS TCP] Thread stopped: %s", cfg->name);
+    unit_disconnect(unit);
+    LOG_INFO("[UPS] Thread stopped: %s", cfg->name);
     return NULL;
 }
 
@@ -524,22 +628,25 @@ int start_ups_modules(module_config_t ups[], int ups_count)
         unit->running         = 1;
         unit->comm_fail_count = 0;
         memset(&unit->tcp_ctx, 0, sizeof(unit->tcp_ctx));
+        memset(&unit->rtu_ctx, 0, sizeof(unit->rtu_ctx));
+        unit->rtu_ctx.fd = -1;
         queue_init(&unit->cmd_queue);
 
-        unit->callbacks.init_callback    = ups_tcp_init_callback;
-        unit->callbacks.process_callback = ups_tcp_process_callback;
-        unit->callbacks.error_callback   = ups_tcp_error_callback;
+        unit->callbacks.init_callback    = ups_init_callback;
+        unit->callbacks.process_callback = ups_process_callback;
+        unit->callbacks.error_callback   = ups_error_callback;
         unit->callbacks.msg_callback     = ups_msg_callback;
         unit->callbacks.start_callback   = NULL;
 
         ups_unit_count++;
 
-        LOG_INFO("[UPS] Starting %s (profile=%s uid=%d).",
+        LOG_INFO("[UPS] Starting %s (profile=%s uid=%d format=%s).",
                  unit->cfg->name,
                  unit->profile->name,
-                 unit->cfg->modbus_uid);
+                 unit->cfg->modbus_uid,
+                 (unit->cfg->format == MODBUS_FORMAT_TCP) ? "TCP" : "RTU");
 
-        if (pthread_create(&unit->thread, NULL, ups_tcp_thread, unit) != 0) {
+        if (pthread_create(&unit->thread, NULL, ups_thread, unit) != 0) {
             LOG_ERROR("[UPS] Failed to create thread for %s.", unit->cfg->name);
             queue_destroy(&unit->cmd_queue);
             unit->running = 0;
