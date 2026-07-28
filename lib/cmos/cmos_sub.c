@@ -11,17 +11,18 @@
 #include <signal.h>
 
 #define CM_RX_BUF        2048 // 接收緩衝區大小，必須足夠大以容納 publisher 發來的訊息，否則可能會被截斷
-#define CM_MAX_PUB_CONN  512 // 訂閱者最多同時連線的 publisher 數量，超過就拒絕新連線
-#define CM_MAX_SUB_SLOTS  512 // 訂閱槽的最大數量，每個訂閱槽對應一組過濾條件和 callback，當收到訊息時會檢查每個槽的過濾條件，如果符合就呼叫對應的 callback
+#define CM_LINE_BUF      1024 // 單行命令緩衝區大小，從 rxbuf 切出的單行最大長度
+#define CM_MAX_PUB_CONN  256 // 訂閱者最多同時連線的 publisher 數量，超過就拒絕新連線
+#define CM_MAX_SUB_SLOTS  256 // 訂閱槽的最大數量，每個訂閱槽對應一組過濾條件和 callback，當收到訊息時會檢查每個槽的過濾條件，如果符合就呼叫對應的 callback
 
 /* -------------------------------------------------------
  * 訂閱槽：每個 topic 訂閱有自己的過濾條件與 callback
  * ------------------------------------------------------- */
 typedef struct {
     char              topic[64];
-    char              filter_state[32]; /* 空字串 = 不過濾 */
-    char              filter_type [32]; /* 空字串 = 不過濾 */
-    char              filter_key  [32]; /* 空字串 = 不過濾 */
+    char              filter_state[64]; /* 空字串 = 不過濾 */
+    char              filter_type [64]; /* 空字串 = 不過濾 */
+    char              filter_key  [64]; /* 空字串 = 不過濾 */
     cmos_callback_t cb;
     int               used;
 } cm_sub_slot_t;
@@ -244,7 +245,7 @@ static int ctx_lookup_slot(struct cmos_sub_ctx *ctx, int s)  // 對訂閱槽 s �
         int start = 0;
         for (int i = 0; i < rxlen; i++) {
             if (rxbuf[i] != '\n') continue;
-            char line[512];
+            char line[CM_LINE_BUF];
             int  ll = i - start + 1;
             if (ll >= (int)sizeof(line)) ll = (int)sizeof(line) - 1;
             memcpy(line, rxbuf + start, ll);
@@ -305,7 +306,7 @@ static void ctx_handle_line(struct cmos_sub_ctx *ctx,
     }
 
     /* 有 filter：解析 state=X type=Y key=Z value=W，對比後只傳 value */
-    char tmp[512]; // 複製 data 到 tmp 中，確保不會修改原始 data 字串，並且有足夠的空間解析出 state、type、key 和 value
+    char tmp[1024]; // 複製 data 到 tmp 中，確保不會修改原始 data 字串，並且有足夠的空間解析出 state、type、key 和 value
     strncpy(tmp, data, sizeof(tmp) - 1);
     tmp[sizeof(tmp) - 1] = '\0';
     char *p_state = NULL, *p_type = NULL, *p_key = NULL, *p_value = NULL;
@@ -442,13 +443,34 @@ void cmos_sub_spin_ctx(cmos_sub_ctx_t *ctx) // 進入 spin loop，持續監聽 p
         time_t now = time(NULL);
         if (now - last_reconnect >= 2) {
             last_reconnect = now;
-            for (int s = 0; s < ctx->sub_slot_count; s++) {
-                if (!ctx->sub_slots[s].used) continue;
-                int has = 0;
-                for (int j = 0; j < CM_MAX_PUB_CONN; j++)
-                    if (ctx->pub_conns[j].active && ctx->pub_conns[j].sub_slot == s)
-                        { has = 1; break; }
-                if (!has) ctx_lookup_slot(ctx, s);
+
+            /*
+             * 修正:master_sock 的重連原本完全依賴外層的
+             * "ctx_active_count(ctx) == 0" 判斷 —— 但 ctx_lookup_slot() 內部
+             * 的 recv() 設有 SO_RCVTIMEO=3s,單純「Master 一時忙、3 秒內沒回
+             * 應」也會被當成連線斷掉,直接把 master_sock 關閉、設成 -1。
+             * 只要當下還有任一個 Publisher 連線是活著的(active_count > 0),
+             * 外層就永遠不會重連 master,導致 master_sock 一旦因逾時被關閉,
+             * 就再也連不回去、永遠發現不了新上線的 Publisher(即使既有連線
+             * 收資料完全正常,問題也不會被發現)。改成每輪都獨立檢查、必要
+             * 就重連,不再依賴 active_count。
+             */
+            if (ctx->master_sock < 0) ctx_reconnect_master(ctx);
+
+            /*
+             * 修正:同一個 topic 可能同時有多個 Publisher(例如本地測試用的
+             * Publisher 跟 Redfish 端的 Publisher 都在 publish 同一個
+             * topic)。原本只在「這個 slot 目前 0 條連線」時才重新查詢
+             * Master,導致只要已經連上任一個 Publisher,之後才上線的其他
+             * Publisher 永遠不會被追加連線進來。改成每個 slot 都定期重新
+             * 查詢,ctx_add_pub() 內部本來就有 ctx_find_conn() 去重,不會
+             * 造成同一個 Publisher 被重複連線。
+             */
+            if (ctx->master_sock >= 0) {
+                for (int s = 0; s < ctx->sub_slot_count; s++) {
+                    if (!ctx->sub_slots[s].used) continue;
+                    ctx_lookup_slot(ctx, s);
+                }
             }
         }
 
@@ -476,7 +498,7 @@ void cmos_sub_spin_ctx(cmos_sub_ctx_t *ctx) // 進入 spin loop，持續監聽 p
             int start = 0;
             for (int k = 0; k < c->rxlen; k++) {
                 if (c->rxbuf[k] != '\n') continue;
-                char line[512];
+                char line[CM_LINE_BUF];
                 int  ll = k - start + 1;
                 if (ll >= (int)sizeof(line)) ll = (int)sizeof(line) - 1;
                 memcpy(line, c->rxbuf + start, ll);

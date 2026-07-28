@@ -114,7 +114,7 @@ int main(int argc, char **argv)
     log_level_t  log_level   = LOG_LEVEL_INFO;
 
     LOG_INFO("***************************************");
-    LOG_INFO(" loop_charger  version: %s", LOOP_CHARGER_VERSION);
+    LOG_INFO(" cm_LFB_ups  version: %s", LOOP_CHARGER_VERSION);
     LOG_INFO("***************************************");
 
     parse_arguments(argc, argv, &config_path, &log_level);
@@ -123,9 +123,9 @@ int main(int argc, char **argv)
     LOG_INFO("Loading configuration: %s", config_path);
     load_json_config(config_path);
 
-    device_register_map_init();
-
     setup_signal_handlers();
+
+    device_register_map_init();
 
     if (start_ups_modules(global_config.ups, global_config.ups_count) != 0) {
         LOG_ERROR("One or more UPS modules failed to start.");

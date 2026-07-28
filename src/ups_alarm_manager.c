@@ -16,8 +16,8 @@
 #include "ups_alarm_manager.h"
 #include "log.h"
 
-#define LOG_DIR       "/run/media/mmcblk1p1/Logs/ups_alarm"
-#define LOG_PATH      "/run/media/mmcblk1p1/Logs/ups_alarm/alarms.db"
+#define LOG_DIR       "/home/cm/LFB_Feeder_Kit/Logs/ups_alarm"
+#define LOG_PATH      "/home/cm/LFB_Feeder_Kit/Logs/ups_alarm/alarms.db"
 #define LOG_NODE      "ups_alarm_node"
 #define LOG_MAX_ROWS  10000
 

@@ -20,7 +20,14 @@
  *    cmos_publish(NULL, "command", "ups_test", "<uint16 value>");
  *
  *  Periodic status push (topic "ups", see cmos_pub_poll_thread):
- *    key=ups_warning_1 / ups_battery_voltage / ... value=<uint16 decimal>
+ *    Driven entirely by each unit's device_map_profile_t table
+ *    (see devices/ups/ups_map.c) – every mapped register is published,
+ *    once per poll interval, with no per-register code in this file.
+ *      key   = table[i].description   (this is now a stable HMI contract;
+ *              renaming a description also renames the CMOS key)
+ *      value = pool register value, decimal (uint16_t)
+ *    Adding/removing a published register only requires editing the
+ *    mapping table in ups_map.c – ups_cmos_bridge.c needs no changes.
  *
  * Lifecycle
  * ─────────

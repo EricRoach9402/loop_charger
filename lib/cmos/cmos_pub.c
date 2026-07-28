@@ -8,13 +8,13 @@
 #include <netinet/tcp.h>
 #include <signal.h>
 
-#define CM_MAX_SUB_CLIENT  512 // publisher 最多同時連線的 subscriber 數量，超過就拒絕新連線
+#define CM_MAX_SUB_CLIENT  256 // publisher 最多同時連線的 subscriber 數量，超過就拒絕新連線
 
 static int master_sock = -1;
 static int listen_sock = -1;  // publisher 的 listen socket fd，等待 subscriber 連線用的 socket，如果沒有就設為 -1
 static int sub_socks[CM_MAX_SUB_CLIENT];  // 與 subscriber 的連線 socket 陣列，最多 CM_MAX_SUB_CLIENT 個 subscriber，每個元素是與 subscriber 的連線 socket fd，如果沒有連線就設為 -1
 static int sub_count  = 0;
-static char pub_topic[64]; 
+static char pub_topic[64]; // publisher 的 topic 名稱，最多 63 個字元，後續發佈訊息時會用到
 static int sigpipe_inited = 0;
 static int pub_epfd       = -1; // epoll fd，用來非阻塞監聽 listen_sock 是否有 subscriber 連進來
 

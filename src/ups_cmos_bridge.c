@@ -8,7 +8,7 @@
  *       The HMI only sends cmd + value (no uid/addr).  Each HMI command has
  *       its own on_xxx_cmd handler (e.g. on_test_cmd) that owns the register
  *       address, converts value to uint16_t, and delegates the shared
- *       validate/enqueue (or validate/read) flow to on_write() / on_read().
+ *       validate/enqueue (or validate/read) flow to on_write().
  *
  *  2. cmos_pub_poll_thread – calls cmos_pub_poll() every 10 ms.
  *       Keeps the read-response publisher alive for new subscriber connections.
@@ -21,7 +21,6 @@
 #include "ups_cmos_bridge.h"
 #include "ups_module.h"
 #include "cmos.h"
-#include "cmos_util.h"
 #include "device_register_map.h"
 #include "ups/ups_map.h"
 #include "log.h"
@@ -50,274 +49,17 @@ static pthread_t        g_sub_thread;
 static pthread_t        g_pub_poll_thread;
 static volatile int     g_bridge_running = 0;
 
-/* ── Register access core (shared by every on_xxx_cmd handler) ───────── */
-
-/**
- * @brief Validate and enqueue a single-register write.
- *
- * Looks up the profile for uid, checks that addr is mapped and not
- * ACCESS_RO, then pushes the write command via ups_cmd_push().
- *
- * Every on_xxx_cmd handler should call this instead of repeating the
- * lookup/validate/enqueue sequence itself.  Must stay non-blocking.
- *
- * @return 0 on success, -1 on validation failure or queue-full.
- */
-static int on_write(uint8_t uid, uint16_t addr, uint16_t val)
-{
-    const device_map_profile_t *profile = ups_find_profile_by_uid(uid);
-    if (!profile) {
-        LOG_WARNING("[CMOS Bridge] write: unknown uid=%u", uid);
-        return -1;
-    }
-
-    const device_register_mapping_t *entry = device_find_slot(profile, addr);
-    if (!entry) {
-        LOG_WARNING("[CMOS Bridge] write: addr 0x%04X not mapped in profile "
-                    "uid=%u", addr, uid);
-        return -1;
-    }
-
-    if (entry->access == ACCESS_RO) {
-        LOG_WARNING("[CMOS Bridge] write: addr 0x%04X is ACCESS_RO (uid=%u) "
-                    "– rejected", addr, uid);
-        return -1;
-    }
-
-    if (ups_cmd_push(uid, addr, &val, 1, UPS_WRITE_MODE_AUTO) != 0) {
-        LOG_ERROR("[CMOS Bridge] write: command queue full for uid=%u "
-                  "addr=0x%04X", uid, addr);
-        return -1;
-    }
-
-    LOG_DEBUG("[CMOS Bridge] write queued: uid=%u addr=0x%04X val=%u",
-              uid, addr, val);
-    return 0;
-}
-
-/**
- * @brief Validate and read a single register from the cached pool.
- *
- * Looks up the profile for uid, checks that addr is mapped and not
- * ACCESS_WO, then reads the cached pool value (updated continuously by
- * process_callback) into *out_val.
- *
- * Every on_xxx_cmd handler should call this instead of repeating the
- * lookup/validate/read sequence itself.  Must stay non-blocking.
- * Publishing the result (if needed) is left to the caller, since the
- * response topic/key format may differ per command.
- *
- * @return 0 on success (*out_val filled), -1 on validation or read failure.
- */
-static int on_read(uint8_t uid, uint16_t addr, uint16_t *out_val)
-{
-    const device_map_profile_t *profile = ups_find_profile_by_uid(uid);
-    if (!profile) {
-        LOG_WARNING("[CMOS Bridge] read: unknown uid=%u", uid);
-        return -1;
-    }
-
-    const device_register_mapping_t *entry = device_find_slot(profile, addr);
-    if (!entry) {
-        LOG_WARNING("[CMOS Bridge] read: addr 0x%04X not mapped in profile "
-                    "uid=%u", addr, uid);
-        return -1;
-    }
-
-    if (entry->access == ACCESS_WO) {
-        LOG_WARNING("[CMOS Bridge] read: addr 0x%04X is ACCESS_WO (uid=%u) "
-                    "– rejected", addr, uid);
-        return -1;
-    }
-
-    if (!pool_read_register(entry->pool_address, out_val)) {
-        LOG_ERROR("[CMOS Bridge] read: pool_read failed pool_addr=0x%04X "
-                  "(uid=%u addr=0x%04X)", entry->pool_address, uid, addr);
-        return -1;
-    }
-
-    LOG_DEBUG("[CMOS Bridge] read uid=%u addr=0x%04X pool[0x%04X]=%u",
-              uid, addr, entry->pool_address, *out_val);
-    return 0;
-}
-
-/* ── CMOS callbacks ───────────────────────────────────────────────────── */
-
-static void on_test_cmd(const char *topic, const char *value)
-{
-    uint16_t addr = 0x0012;
-    uint16_t val  = (uint16_t)strtoul(value, NULL, 0);
-
-    (void)topic;
-
-    LOG_INFO("[CMOS Bridge] test command received: '%s'", value);
-
-    on_write(UPS_BRIDGE_DEFAULT_UID, addr, val);
-}
-
-static void on_shutdown_cmd(const char *topic, const char *value)
-{
-    uint16_t addr = 0x0013;
-    uint16_t val  = (uint16_t)strtoul(value, NULL, 0);
-
-    (void)topic;
-
-    LOG_INFO("[CMOS Bridge] test command received: '%s'", value);
-
-    on_write(UPS_BRIDGE_DEFAULT_UID, addr, val);
-}
-
-static void on_time_cmd(const char *topic, const char *value)
-{
-    uint16_t addr = 0x0014;
-    uint16_t val  = (uint16_t)strtoul(value, NULL, 0);
-
-    (void)topic;
-
-    LOG_INFO("[CMOS Bridge] test command received: '%s'", value);
-
-    on_write(UPS_BRIDGE_DEFAULT_UID, addr, val);
-}
-
-static void on_off_time_cmd(const char *topic, const char *value)
-{
-    uint16_t addr = 0x0015;
-    uint16_t val  = (uint16_t)strtoul(value, NULL, 0);
-
-    (void)topic;
-
-    LOG_INFO("[CMOS Bridge] test command received: '%s'", value);
-
-    on_write(UPS_BRIDGE_DEFAULT_UID, addr, val);
-}
-
-static void on_trigger_cmd(const char *topic, const char *value)
-{
-    uint16_t addr = 0x0015;
-    uint16_t val  = (uint16_t)strtoul(value, NULL, 0);
-
-    (void)topic;
-
-    LOG_INFO("[CMOS Bridge] test command received: '%s'", value);
-
-    on_write(UPS_BRIDGE_DEFAULT_UID, addr, val);
-}
-/* ── Thread cleanup handler ───────────────────────────────────────────── */
-
-/**
- * @brief pthread cleanup handler – destroys the subscriber context on cancel.
- */
-static void cleanup_sub_ctx(void *arg)
-{
-    cmos_sub_ctx_t *ctx = (cmos_sub_ctx_t *)arg;
-    cmos_sub_destroy(ctx);
-    LOG_INFO("[CMOS Bridge] subscriber context destroyed.");
-}
-
-/* ── Thread functions ─────────────────────────────────────────────────── */
-
-/**
- * @brief CMOS subscriber thread.
- *
- * Subscribes to BRIDGE_SUB_HMI_TOPIC once per HMI command (type="command",
- * key=<cmd name>), each routed to its own on_xxx_cmd handler, then enters
- * cmos_sub_spin_ctx() which blocks indefinitely.  The thread is stopped via
- * pthread_cancel(); epoll_wait() inside spin_ctx is a cancellation point so
- * the thread exits cleanly.
- */
-static void *cmos_sub_thread(void *arg)
-{
-    (void)arg;
-
-    cmos_sub_ctx_t *ctx = cmos_sub_create(BRIDGE_MASTER_IP,
-                                           BRIDGE_MASTER_PORT,
-                                           "ups_sub");
-    if (!ctx) {
-        LOG_ERROR("[CMOS Bridge] failed to create subscriber context.");
-        return NULL;
-    }
-
-    pthread_cleanup_push(cleanup_sub_ctx, ctx);
-
-    cmos_sub_add(ctx, BRIDGE_SUB_HMI_TOPIC, NULL, "command", "ups_test",  on_test_cmd);
-    cmos_sub_add(ctx, BRIDGE_SUB_HMI_TOPIC, NULL, "command", "ups_shutdown",  on_shutdown_cmd);
-    cmos_sub_add(ctx, BRIDGE_SUB_HMI_TOPIC, NULL, "command", "on_time",  on_time_cmd);
-    cmos_sub_add(ctx, BRIDGE_SUB_HMI_TOPIC, NULL, "command", "off_time",  on_off_time_cmd);
-    cmos_sub_add(ctx, BRIDGE_SUB_HMI_TOPIC, NULL, "command", "trigger",  on_trigger_cmd);
-
-    LOG_INFO("[CMOS Bridge] subscriber thread ready, "
-             "topic='%s' (write + read).", BRIDGE_SUB_HMI_TOPIC);
-
-    cmos_sub_spin_ctx(ctx);  /* blocks – exited only by pthread_cancel() */
-
-    pthread_cleanup_pop(1);
-    return NULL;
-}
-
-/**
- * @brief Read one pool register and publish its value to BRIDGE_PUB_TOPIC.
- *
- * Converts the cached uint16_t pool value to a decimal string and forwards
- * it to cmos_publish().  Intended for periodic push from cmos_pub_poll_thread.
- *
- * @param type  CMOS message type field.
- * @param key   CMOS message key field (e.g. register address string).
- * @param pool_address  Absolute index into internal_pool[].
- */
+/* ── Static Function Prototypes ─────────────────────────────────────────── */
+static int on_write(uint8_t uid, uint16_t addr, uint16_t val);
+static void on_test_cmd(const char *topic, const char *value);
+static void cleanup_sub_ctx(void *arg);
+static void *cmos_sub_thread(void *arg);
+static void *cmos_pub_poll_thread(void *arg);
 static void publish_pool_register(const module_config_t *cfg,
-                                  const char *type,
-                                  const char *key,
-                                  uint16_t    pool_address)
-{
-    uint16_t val = 0;
-
-    const char *state = (cfg->connection_state == CONNECTION_CONNECTED)
-                        ? "Alive"
-                        : "Disconnect";
-
-    if (!pool_read_register(pool_address, &val)) {
-        LOG_WARNING("[CMOS Bridge] publish_pool_register: "
-                    "pool_address 0x%04X out of range.", pool_address);
-        return;
-    }
-
-    char val_str[8];
-    snprintf(val_str, sizeof(val_str), "%u", val);
-
-    cmos_publish(state, type, key, val_str);
-}
-
-/**
- * @brief Publisher poll thread.
- *
- * cmos_pub_poll() is non-blocking (epoll_wait timeout=0) so calling it at
- * 10 ms intervals is sufficient to accept new read-response subscribers.
- * Exits when g_bridge_running is cleared by ups_cmos_bridge_stop().
- */
-static void *cmos_pub_poll_thread(void *arg)
-{
-    module_config_t *ups = (module_config_t *)arg;
-
-    LOG_INFO("[CMOS Bridge] publisher poll thread started, "
-             "resp topic='%s'.", BRIDGE_PUB_TOPIC);
-
-    while (g_bridge_running) {
-        cmos_pub_poll();
-
-        for (int i = 0; i < global_config.ups_count; i++) {
-            publish_pool_register( &ups[i], NULL, "ups_warning_1", 0xBB00);
-            publish_pool_register( &ups[i], NULL, "ups_warning_2", 0xBB01);
-            publish_pool_register( &ups[i], NULL, "ups_warning_3", 0xBB02);
-            publish_pool_register( &ups[i], NULL, "ups_warning_4", 0xBB03);
-            publish_pool_register( &ups[i], NULL, "ups_battery_voltage", 0xBB04);
-            publish_pool_register( &ups[i], NULL, "ups_battery_discharging_current", 0xBB05);
-        }
-
-        usleep(BRIDGE_PUB_POLL_US);
-    }
-
-    return NULL;
-}
+                                    const char *type,
+                                    const char *key,
+                                    uint16_t    pool_address);
+static void publish_all_pool_register(const module_config_t *cfg);
 
 /* ── Public API ───────────────────────────────────────────────────────── */
 
@@ -366,4 +108,207 @@ void ups_cmos_bridge_stop(void)
     cmos_pub_close();
 
     LOG_INFO("[CMOS Bridge] stopped.");
+}
+
+/* ── Register access core (shared by every on_xxx_cmd handler) ───────── */
+
+/**
+ * @brief Validate and enqueue a single-register write.
+ *
+ * Looks up the profile for uid, checks that addr is mapped and not
+ * ACCESS_RO, then pushes the write command via ups_cmd_push().
+ *
+ * Every on_xxx_cmd handler should call this instead of repeating the
+ * lookup/validate/enqueue sequence itself.  Must stay non-blocking.
+ *
+ * @return 0 on success, -1 on validation failure or queue-full.
+ */
+static int on_write(uint8_t uid, uint16_t addr, uint16_t val)
+{
+    const device_map_profile_t *profile = ups_find_profile_by_uid(uid);
+    if (!profile) {
+        LOG_WARNING("[CMOS Bridge] write: unknown uid=%u", uid);
+        return -1;
+    }
+
+    const device_register_mapping_t *entry = device_find_slot(profile, addr);
+    if (!entry) {
+        LOG_WARNING("[CMOS Bridge] write: addr 0x%04X not mapped in profile "
+                    "uid=%u", addr, uid);
+        return -1;
+    }
+
+    if (entry->access == ACCESS_RO) {
+        LOG_WARNING("[CMOS Bridge] write: addr 0x%04X is ACCESS_RO (uid=%u) "
+                    "– rejected", addr, uid);
+        return -1;
+    }
+
+    if (ups_cmd_push(uid, addr, &val, 1, UPS_WRITE_MODE_AUTO) != 0) {
+        LOG_ERROR("[CMOS Bridge] write: command queue full for uid=%u "
+                  "addr=0x%04X", uid, addr);
+        return -1;
+    }
+
+    LOG_DEBUG("[CMOS Bridge] write queued: uid=%u addr=0x%04X val=%u",
+              uid, addr, val);
+    return 0;
+}
+
+/* ── CMOS callbacks ───────────────────────────────────────────────────── */
+
+static void on_test_cmd(const char *topic, const char *value)
+{
+    uint16_t addr = 0x0012;
+    uint16_t val  = (uint16_t)strtoul(value, NULL, 0);
+
+    (void)topic;
+
+    LOG_INFO("[CMOS Bridge] test command received: '%s'", value);
+
+    on_write(UPS_BRIDGE_DEFAULT_UID, addr, val);
+}
+/* ── Thread cleanup handler ───────────────────────────────────────────── */
+
+/**
+ * @brief pthread cleanup handler – destroys the subscriber context on cancel.
+ */
+static void cleanup_sub_ctx(void *arg)
+{
+    cmos_sub_ctx_t *ctx = (cmos_sub_ctx_t *)arg;
+    cmos_sub_destroy(ctx);
+    LOG_INFO("[CMOS Bridge] subscriber context destroyed.");
+}
+
+/* ── Thread functions ─────────────────────────────────────────────────── */
+
+/**
+ * @brief CMOS subscriber thread.
+ *
+ * Subscribes to BRIDGE_SUB_HMI_TOPIC once per HMI command (type="command",
+ * key=<cmd name>), each routed to its own on_xxx_cmd handler, then enters
+ * cmos_sub_spin_ctx() which blocks indefinitely.  The thread is stopped via
+ * pthread_cancel(); epoll_wait() inside spin_ctx is a cancellation point so
+ * the thread exits cleanly.
+ */
+static void *cmos_sub_thread(void *arg)
+{
+    (void)arg;
+
+    cmos_sub_ctx_t *ctx = cmos_sub_create(BRIDGE_MASTER_IP,
+                                           BRIDGE_MASTER_PORT,
+                                           "ups_sub");
+    if (!ctx) {
+        LOG_ERROR("[CMOS Bridge] failed to create subscriber context.");
+        return NULL;
+    }
+
+    pthread_cleanup_push(cleanup_sub_ctx, ctx);
+
+    /*
+    cmos_sub_add(ctx, BRIDGE_SUB_HMI_TOPIC, NULL, "command", "ups_test",  on_test_cmd);
+    cmos_sub_add(ctx, BRIDGE_SUB_HMI_TOPIC, NULL, "command", "ups_shutdown",  on_shutdown_cmd);
+    cmos_sub_add(ctx, BRIDGE_SUB_HMI_TOPIC, NULL, "command", "on_time",  on_time_cmd);
+    cmos_sub_add(ctx, BRIDGE_SUB_HMI_TOPIC, NULL, "command", "off_time",  on_off_time_cmd);
+    cmos_sub_add(ctx, BRIDGE_SUB_HMI_TOPIC, NULL, "command", "trigger",  on_trigger_cmd);
+    */
+
+    LOG_INFO("[CMOS Bridge] subscriber thread ready, "
+             "topic='%s' (write + read).", BRIDGE_SUB_HMI_TOPIC);
+
+    cmos_sub_spin_ctx(ctx);  /* blocks – exited only by pthread_cancel() */
+
+    pthread_cleanup_pop(1);
+    return NULL;
+}
+
+/**
+ * @brief Read one pool register and publish its value to BRIDGE_PUB_TOPIC.
+ *
+ * Converts the cached uint16_t pool value to a decimal string and forwards
+ * it to cmos_publish().  Intended for periodic push from cmos_pub_poll_thread.
+ *
+ * @param type  CMOS message type field.
+ * @param key   CMOS message key field (e.g. register address string).
+ * @param pool_address  Absolute index into internal_pool[].
+ */
+static void publish_pool_register(const module_config_t *cfg,
+                                  const char *type,
+                                  const char *key,
+                                  uint16_t    pool_address)
+{
+    uint16_t val = 0;
+
+    const char *state = (cfg->connection_state == CONNECTION_CONNECTED)
+                        ? "Alive"
+                        : "Disconnect";
+
+    if (!pool_read_register(pool_address, &val)) {
+        LOG_WARNING("[CMOS Bridge] publish_pool_register: "
+                    "pool_address 0x%04X out of range.", pool_address);
+        return;
+    }
+
+    char val_str[8];
+    snprintf(val_str, sizeof(val_str), "%u", val);
+
+    cmos_publish(state, type, key, val_str);
+}
+
+/**
+ * @brief Publish every mapped register of one unit's profile to CMOS.
+ *
+ * Drives the periodic status push directly from the unit's
+ * device_map_profile_t table (see devices/ups/ups_map.c) instead of a
+ * hand-written per-register list: for every row, table[i].description is
+ * used as the CMOS key and table[i].pool_address selects the value.
+ *
+ * @param cfg  Module configuration for the unit being published (selects
+ *             the profile via cfg->modbus_uid and the Alive/Disconnect
+ *             state via cfg->connection_state).
+ */
+static void publish_all_pool_register(const module_config_t *cfg)
+{
+    if (!cfg || !cfg->enabled) {
+        return;
+    }
+
+    const device_map_profile_t *profile =
+        ups_find_profile_by_uid((uint8_t)cfg->modbus_uid);
+    if (!profile) {
+        LOG_WARNING("[CMOS Bridge] publish_all_pool_register: "
+                    "profile not found for uid=%d.", cfg->modbus_uid);
+        return;
+    }
+
+    for (size_t i = 0; i < profile->table_count; i++) {
+        publish_pool_register(cfg, NULL,
+                              profile->table[i].description,
+                              profile->table[i].pool_address);
+    }
+}
+/**
+ * @brief Publisher poll thread.
+ *
+ * cmos_pub_poll() is non-blocking (epoll_wait timeout=0) so calling it at
+ * 10 ms intervals is sufficient to accept new read-response subscribers.
+ * Exits when g_bridge_running is cleared by ups_cmos_bridge_stop().
+ */
+static void *cmos_pub_poll_thread(void *arg)
+{
+    module_config_t *ups = (module_config_t *)arg;
+
+    LOG_INFO("[CMOS Bridge] publisher poll thread started, "
+             "resp topic='%s'.", BRIDGE_PUB_TOPIC);
+
+    while (g_bridge_running) {
+        cmos_pub_poll();
+        for (int i = 0; i < global_config.ups_count; i++) {
+            publish_all_pool_register(&ups[i]);
+        }
+
+        usleep(BRIDGE_PUB_POLL_US);
+    }
+
+    return NULL;
 }
